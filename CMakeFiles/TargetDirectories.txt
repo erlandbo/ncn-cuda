@@ -1,0 +1,3 @@
+/home/erland/repo/ncn-cuda/CMakeFiles/MyCUDACode.dir
+/home/erland/repo/ncn-cuda/CMakeFiles/edit_cache.dir
+/home/erland/repo/ncn-cuda/CMakeFiles/rebuild_cache.dir
