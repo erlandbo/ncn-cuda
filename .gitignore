@@ -49,3 +49,8 @@
 *.zip
 libtorch/
 .vscode/
+CMakeFiles/
+CMakeCache.txt
+CMakeLists.txt
+Makefile
+cmake_install.cmake
