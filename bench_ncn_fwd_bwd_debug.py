@@ -4,6 +4,10 @@ import torch
 from torch.nn import functional as F
 from torch.utils.cpp_extension import load
 
+from triton_reference import torch_reference
+from ncn_triton_net import fused_chunk_linear_ncn
+
+import time
 
 # Load the CUDA kernel as a python module
 ncn_fwd = load(name='ncn_fwd', sources=['main_ncn.cpp', 'ncn_fwd.cu'], extra_cuda_cflags=['-O2'])
@@ -89,7 +93,7 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
                     #phi = torch.cat((xi, xj), dim=-1) # (n, 2Ec)
                     Wij =  torch.matmul(xi, W_ci) + torch.matmul(xj, W_cj)
 
-                    T = alpha * xi + (1.0-alpha) * Wij[:, None] * xj  # (n,Ec)
+                    T = alpha * xi + (1.0-alpha) * Wij[None, :] * xj  # (n,Ec)
 
                     F = torch.tanh(T)
 
@@ -111,8 +115,8 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
     return Y_, Ya_
 
 
-dY = torch.randn_like(x)
-dYa = torch.randn_like(xa)
+dyi = torch.randn_like(x)
+dya = torch.zeros_like(xa) #torch.randn_like(xa)
 
 
 indices = torch.arange(0, seq_len)
@@ -125,7 +129,7 @@ idx_within_group = indices % n_cache
 yi_ref, ya_ref = ref_fwd(x, xa, W, alpha, activation, n_cache, n_head, group_idx, idx_within_group)
 #print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
-yi_ref.backward(dY)
+yi_ref.backward(dyi)
 
 
 ref_dx, x.grad = x.grad.clone(), None
@@ -138,6 +142,41 @@ ref_dW, W.grad = W.grad.clone(), None
 
 print('=== profiling minimal flash attention === ')
 
+
+MASK = torch.ones((batch_size, seq_len), device="cuda")
+
+seqlen_offsets = MASK.sum(-1).to(torch.int32)
+ACTIVATION="tanh"
+
+ctx_indices = torch.arange(seq_len).cuda()
+GROUP = n_cache
+group_tensor = ctx_indices // GROUP
+group_tensor = torch.argsort(group_tensor).to(torch.int32).cuda()
+
+ref_yi_2, ref_ya_2 = torch_reference(x, xa, W, torch.randn_like(x), torch.randn_like(x), torch.randn_like(x), group_tensor, seqlen_offsets, alpha, ACTIVATION, GROUP, n_head)
+
+ref_yi_2.backward(dyi)
+
+
+ref_dx_2, x.grad = x.grad.clone(), None
+ref_dxa_2, xa.grad = xa.grad.clone(), None
+ref_dW_2, W.grad = W.grad.clone(), None
+
+
+
+start_time = time.time()
+tri_yi, tri_ya = fused_chunk_linear_ncn(x, xa, W, group_tensor, seqlen_offsets, alpha, ACTIVATION, n_head, n_cache, l=1)
+#import pdb; pdb.set_trace()
+tri_yi.backward(dyi)
+#print(x.grad[5, 0])
+
+tri_dW, W.grad = W.grad.clone(), None
+tri_dx, x.grad = x.grad.clone(), None
+tri_dxa, xa.grad = xa.grad.clone(), None
+print("triton", time.time() - start_time)
+
+start_time = time.time()
+
 #with torch.autograd.profiler.profile(use_cuda=True) as prof:
 yi, ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
     #results = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
@@ -147,23 +186,19 @@ yi, ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
 
 
 #with torch.autograd.profiler.profile(use_cuda=True) as prof:
-X, Xa, dX, dXa, dW = ncn_bwd.backward(yi, ya, dY, dYa, W, alpha, activation, n_cache, n_head, 1)
+X, Xa, dX, dXa, dW = ncn_bwd.backward(yi, ya, dyi, dya, W, alpha, activation, n_cache, n_head, 1)
     #results = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
     #print(results.shape)
 #print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+print("c++ cuda", time.time() - start_time)
+
+print('yi values sanity check:', torch.allclose(yi_ref, ref_yi_2, rtol=0, atol=1e-02))
+print('ya values sanity check:', torch.allclose(ya_ref, ref_ya_2, rtol=0, atol=1e-02))
 
 
-print('yi values sanity check:', torch.allclose(yi_ref, yi, rtol=0, atol=1e-02))
-print('ya values sanity check:', torch.allclose(ya_ref, ya, rtol=0, atol=1e-02))
 
+print('dxi values sanity check:', torch.allclose(ref_dx, ref_dx_2, rtol=0, atol=1e-02))
+print('dxa values sanity check:', torch.allclose(ref_dxa, ref_dxa_2, rtol=0, atol=1e-02))
 
-print('xi values sanity check:', torch.allclose(x, X, rtol=0, atol=1e-02))
-print('xa values sanity check:', torch.allclose(xa, Xa, rtol=0, atol=1e-02))
-
-
-print('dxi values sanity check:', torch.allclose(ref_dx, dX, rtol=0, atol=1e-02))
-print('dxa values sanity check:', torch.allclose(ref_dxa, dXa, rtol=0, atol=1e-02))
-
-print('dW values sanity check:', torch.allclose(ref_dW, dW.reshape(-1, 2*embd).sum(0), rtol=0, atol=1e-02))
 
 import pdb; pdb.set_trace()

@@ -54,3 +54,4 @@ CMakeCache.txt
 CMakeLists.txt
 Makefile
 cmake_install.cmake
+__pycache__/*

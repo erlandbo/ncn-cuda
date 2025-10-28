@@ -4,7 +4,6 @@ import torch
 from torch.nn import functional as F
 from torch.utils.cpp_extension import load
 
-
 # Load the CUDA kernel as a python module
 ncn_fwd = load(name='ncn_fwd', sources=['main_ncn.cpp', 'ncn_fwd.cu'], extra_cuda_cflags=['-O2'])
 ncn_bwd = load(name='ncn_bwd', sources=['main_ncn_bwd.cpp', 'ncn_bwd.cu'], extra_cuda_cflags=['-O2'])
@@ -83,8 +82,8 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
                     #import pdb; pdb.set_trace()
 
                     
-                    xj = xi[j].unsqueeze(0).broadcast_to(xi.shape)#.detach().clone()  # (n, Ec)
-                    #xj.requires_grad = False
+                    xj = xi[j].unsqueeze(0).broadcast_to(xi.shape).detach().clone()  # (n, Ec)
+                    xj.requires_grad = False
 
                     #phi = torch.cat((xi, xj), dim=-1) # (n, 2Ec)
                     Wij =  torch.matmul(xi, W_ci) + torch.matmul(xj, W_cj)
@@ -121,9 +120,9 @@ idx_within_group = indices % n_cache
 
 
 
-#with torch.autograd.profiler.profile(use_cuda=True) as prof:
-yi_ref, ya_ref = ref_fwd(x, xa, W, alpha, activation, n_cache, n_head, group_idx, idx_within_group)
-#print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    yi_ref, ya_ref = ref_fwd(x, xa, W, alpha, activation, n_cache, n_head, group_idx, idx_within_group)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 yi_ref.backward(dY)
 
@@ -134,23 +133,21 @@ ref_dW, W.grad = W.grad.clone(), None
 
 
 
-
-
 print('=== profiling minimal flash attention === ')
 
-#with torch.autograd.profiler.profile(use_cuda=True) as prof:
-yi, ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
+with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    yi, ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
     #results = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
     #print(results.shape)
-#print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 
 
-#with torch.autograd.profiler.profile(use_cuda=True) as prof:
-X, Xa, dX, dXa, dW = ncn_bwd.backward(yi, ya, dY, dYa, W, alpha, activation, n_cache, n_head, 1)
+with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    X, Xa, dX, dXa, dW = ncn_bwd.backward(yi, ya, dY, dYa, W, alpha, activation, n_cache, n_head, 1)
     #results = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, 1)
     #print(results.shape)
-#print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 
 print('yi values sanity check:', torch.allclose(yi_ref, yi, rtol=0, atol=1e-02))
