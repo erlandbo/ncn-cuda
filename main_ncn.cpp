@@ -1,14 +1,14 @@
 #include <torch/extension.h>
 
-std::tuple< torch::Tensor, torch::Tensor > forward(
+std::vector< torch::Tensor > forward(
     torch::Tensor X, 
     torch::Tensor Xa, 
     torch::Tensor W, 
     const float alpha, 
     const int activation, 
-    const int n, 
-    const int C,
-    const int l
+    const int cache_dim, 
+    const int nhead,
+    const int module_l
 );
 
 

@@ -130,6 +130,8 @@ void backward_kernel(
             float dxi = 0.0f;
             float dxa = 0.0f;
             float dxj = 0.0f;
+            float dwi = 0.0f;
+            float dwj = 0.0f;
 
             for (int row = 0; row < nfeats; row++) {
                 float delta_ij = (tx == j) ? 1.0f : 0.0f;
@@ -178,12 +180,27 @@ void backward_kernel(
                 float dyi_dxa = (1.0-m) * dya_dxa;
                 dxa += dyi_dxa * dY_smem[tx * nfeats + row] + dya_dxa * dYa_smem[tx * nfeats + row];
 
+                // Compute dW
+                float df_dwi = df_dt * (1.0-alpha) * Y_smem[tx * nfeats + col] * Y_smem[j * nfeats + row];  
+                float df_dwj = df_dt * (1.0-alpha) * Y_smem[j * nfeats + col] * Y_smem[j * nfeats + row];  
+                
+                float dya_dwi = (1.0-m) * df_dwi;  
+                float dya_dwj = (1.0-m) * df_dwj;  
+                
+                float dyi_dwi = (1.0-m) * dya_dwi;  
+                float dyi_dwj = (1.0-m) * dya_dwj;
+                
+                dwi += dyi_dwi * dY_smem[tx * nfeats + row] + dya_dwi * dYa_smem[tx * nfeats + row];
+                dwj += dyi_dwj * dY_smem[tx * nfeats + row] + dya_dwj * dYa_smem[tx * nfeats + row];
+
                 __syncthreads();
 
             }
 
             __syncthreads();
 
+            dWi_smem[tx * nfeats + col] += dwi;
+            dWj_smem[tx * nfeats + col] += dwj;
 
             dxj_smem[tx * nfeats + col] = dxj;
 

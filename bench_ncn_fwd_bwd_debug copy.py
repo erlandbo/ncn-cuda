@@ -66,12 +66,14 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
             W_cj = W[E + c * ce : E + (c+1) * ce]
             n_groups = torch.unique(group_idx)
             idxs = torch.arange(0, N)
-            for group_nr in range(N//n):
-                idxs = torch.arange(0, n)
-                xi_idxes = group_nr * n + idxs;
+            for group in n_groups:
+                group_mask = group_idx == group
 
-                xi_group = x_bc[xi_idxes]                        # extracted values in correct order
-                xa_group = xa_bc[xi_idxes]                        # extracted values in correct order
+                idxs = group_mask.nonzero(as_tuple=True)[0] # original positions for group g
+                order = idx_within_group[idxs].argsort()       # order within this group's indices
+                idxs_sorted = idxs[order]                      # positions sorted inside group
+                xi_group = x_bc[idxs_sorted]                        # extracted values in correct order
+                xa_group = xa_bc[idxs_sorted]                        # extracted values in correct order
 
                 #xi_group = x_bc[group_mask]
                 #indices_group = idx_within_group[group_mask]
@@ -94,7 +96,7 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
                     T = alpha * xi + (1.0-alpha) * Wij[None, :] * xj  # (n,Ec)
 
                     F = torch.tanh(T)
-                    #F = T
+
                     
                     m = 0.9
                     ya = xa*m + (1-m)*F
@@ -106,8 +108,8 @@ def ref_fwd(X, Xa, W, alpha, activation, n, C, group_idx, idx_within_group):
                     xi = yi
                     xa = ya
                 
-                Y_[b, xi_idxes, c * ce : (c+1) * ce] += xi
-                Ya_[b, xi_idxes, c * ce : (c+1) * ce] += xa
+                Y_[b, idxs_sorted, c * ce : (c+1) * ce] += xi
+                Ya_[b, idxs_sorted, c * ce : (c+1) * ce] += xa
                 
 
     return Y_, Ya_
@@ -121,8 +123,6 @@ indices = torch.arange(0, seq_len)
 group_idx = indices // n_cache
 idx_within_group = indices % n_cache
 
-
-print(x)
 
 
 #with torch.autograd.profiler.profile(use_cuda=True) as prof:
@@ -167,20 +167,20 @@ ref_dW_2, W.grad = W.grad.clone(), None
 
 torch.cuda.reset_peak_memory_stats()
 
-# start_time = time.time()
-# tri_yi, tri_ya = fused_chunk_linear_ncn(x, xa, W, group_tensor, seqlen_offsets, alpha, ACTIVATION, n_head, n_cache, l=1)
-# #import pdb; pdb.set_trace()
-# tri_yi.backward(dyi, retain_graph=True)
-# tri_ya.backward(dya)
-# #print(x.grad[5, 0])
+start_time = time.time()
+tri_yi, tri_ya = fused_chunk_linear_ncn(x, xa, W, group_tensor, seqlen_offsets, alpha, ACTIVATION, n_head, n_cache, l=1)
+#import pdb; pdb.set_trace()
+tri_yi.backward(dyi, retain_graph=True)
+tri_ya.backward(dya)
+#print(x.grad[5, 0])
 
-# tri_dW, W.grad = W.grad.clone(), None
-# tri_dx, x.grad = x.grad.clone(), None
-# tri_dxa, xa.grad = xa.grad.clone(), None
-# print("triton", time.time() - start_time)
+tri_dW, W.grad = W.grad.clone(), None
+tri_dx, x.grad = x.grad.clone(), None
+tri_dxa, xa.grad = xa.grad.clone(), None
+print("triton", time.time() - start_time)
 
-# triton_mem = torch.cuda.max_memory_allocated()
-# torch.cuda.reset_peak_memory_stats()
+triton_mem = torch.cuda.max_memory_allocated()
+torch.cuda.reset_peak_memory_stats()
 
 start_time = time.time()
 
@@ -200,7 +200,7 @@ X, Xa, dX, dXa, dW = ncn_bwd.backward(yi, ya, dyi, dya, W, alpha, activation, n_
 print("c++ cuda", time.time() - start_time)
 cpp_mem = torch.cuda.max_memory_allocated()
 
-#print("triton memory", triton_mem)
+print("triton memory", triton_mem)
 print("cpp memory", cpp_mem)
 
 print('yi values sanity check:', torch.allclose(yi_ref, ref_yi_2, rtol=0, atol=1e-02))

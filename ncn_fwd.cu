@@ -29,50 +29,62 @@ __device__ float kernel(int group_nr, int idx_within_group, int n, int N) {
 
 
 __global__
-void forward_kernel(const float* X, const float* Xa, const float* W, const int B, const int N,
-                    const int E, const int n, const int C, const int activation, const float alpha,
-                    float *Y, float* Ya, const int l) {
-    int tx = threadIdx.x;
-    int bxy = blockIdx.x; int bn = blockIdx.y;  // batch, head index and group index
-    int bx = bxy / C; int by = bxy % C;
+void forward_kernel(
+    const float* X, 
+    const float* Xa, 
+    const float* W, 
+    const uint batch_dim, 
+    const uint ctx_dim, 
+    const uint embed_dim, 
+    const uint cache_dim, 
+    const uint activation, 
+    const float alpha,
+    const uint nhead,
+    float *Y, 
+    float* Ya, 
+    const uint module_l
+) {
+    const uint tx = threadIdx.x;
+    const uint bbatchhead = blockIdx.x;
+    const uint bcache = blockIdx.y;
 
-    // Define SRAM for Q,K,V,S
+    const uint bbatch = bbatchhead / nhead; 
+    const uint bhead = bbatchhead % nhead;
+
+    const uint nfeats = embed_dim / nhead;
+
+    // Define SRAM
+    const uint tile_size = cache_dim * nfeats;
+
     extern __shared__ float sram[];
-    int tile_size = n * E / C;  // size of x
-    float* Xi = sram;
-    float* Xia = &sram[tile_size];
-    float* F = &sram[tile_size * 2];
+    float* X_smem = sram;
+    float* Xa_smem = &sram[tile_size];
+
+    const uint i = extract_group_index_simple(bcache, tx, cache_dim, ctx_dim);
+    const uint xi_offset = (bbatch * ctx_dim * embed_dim) + (i * embed_dim) + bhead * nfeats;
 
 
-    int i = extract_group_index_simple(bn, tx, n, N);
-    int xi_offset = (bx * N * E) + (i * E) + by * (E / C);
-    //if (bx == 0 and by == 0){
-    //    printf("tx: %d  bx:%d by:%d bn:%d xi-offset:%d x0:%f x1:%f\n", tx, bx, by, bn, xi_offset, X[xi_offset + 0], X[xi_offset + 1]);
-    //}
-
-
-    for (int feat = 0; feat < E / C; feat++) {
-        // Offset into x - different for each batch and head
-        // Load to SRAM
-        Xi[(tx * E / C) + feat] = X[xi_offset + feat];
-        Xia[(tx * E / C) + feat] = Xa[xi_offset + feat];
-
-        //if (bx == 0 and by == 0){
-        //    printf("tx: %d  bx:%d by:%d bn:%d xi:%f x:%f \n", tx, bx, by, bn, Xi[tx * E / C + feat], X[xi_offset + feat]);
-        //}
+    for (int feat = 0; feat < nfeats; feat++) {
+        X_smem[tx * nfeats + feat] = X[xi_offset + feat];
+        Xa_smem[tx * nfeats + feat] = Xa[xi_offset + feat];
 
     }
     
     __syncthreads();  // such that the inner loop can use the correct Xi, Xia
     
-    for (int j = 0; j < n; j++)  {
-        
+    float m = 0.9;
+    for (int j = 0; j < nfeats; j++)  {
+        __syncthreads();  // such that the inner loop can use the correct Xi, Xia
+
         float attn = 0.0;
-        for (int feat = 0; feat < E / C; feat++) {
-            attn += Xi[tx * E / C + feat] * W[E / C * by + feat] + Xi[j * E / C + feat] * W[E + E / C * by + feat]; 
+        for (int feat = 0; feat < nfeats; feat++) {
+            attn += X_smem[tx * nfeats + feat] * W[nfeats * bhead + feat] \
+                + X_smem[j * nfeats + feat] * W[embed_dim + nfeats * bhead + feat]; 
         }
-        for (int feat = 0; feat < E / C; feat++) {
-            float t = alpha * Xi[tx * E / C + feat] + (1.0-alpha) * attn * Xi[j * E / C + feat];
+        __syncthreads();
+        for (int feat = 0; feat < nfeats; feat++) {
+            float t = alpha * X_smem[tx * nfeats + feat] + (1.0-alpha) * attn * X_smem[j * nfeats + feat];
+            __syncthreads();
             float f;    
             if (activation == 0){
                 f = tanh(t);
@@ -85,58 +97,65 @@ void forward_kernel(const float* X, const float* Xa, const float* W, const int B
                 f = t;
             }
 
-            F[tx * E / C + feat] = f; 
-
+            float ya = m * Xa_smem[tx * nfeats + feat] + (1.0-m) * f; 
+            float yi = m * X_smem[tx * nfeats + feat] + (1.0-m) * ya;
+            Xa_smem[tx * nfeats + feat] = ya;
+            X_smem[tx * nfeats + feat] = yi;
+            __syncthreads();
         }
         
         __syncthreads();
-        for (int feat = 0; feat < E / C; feat++) {
-            float m = 0.9;
-            float ya = m * Xia[tx * E / C + feat] + (1.0-m) * F[tx * E / C + feat]; 
-            float yi = m * Xi[tx * E / C + feat] + (1.0-m) * ya;
-            Xia[tx * E / C + feat] = ya; 
-            Xi[tx * E / C + feat] = yi; 
-        }
-        __syncthreads();
+
     }
-    for (int feat = 0; feat < E / C; feat++) {
-        Y[xi_offset + feat] = Xi[(tx * E / C) + feat];
-        Ya[xi_offset + feat] = Xia[(tx * E / C) + feat];
+    __syncthreads();
+    for (int feat = 0; feat < nfeats; feat++) {
+        Y[xi_offset + feat] = X_smem[tx * nfeats + feat];
+        Ya[xi_offset + feat] = Xa_smem[tx * nfeats + feat];
     }
 }
 
 
-std::tuple< torch::Tensor, torch::Tensor > forward(
+std::vector< torch::Tensor > forward(
     torch::Tensor X, 
     torch::Tensor Xa, 
     torch::Tensor W, 
     const float alpha, 
     const int activation, 
-    const int n, 
-    const int C,
-    const int l
+    const int cache_dim, 
+    const int nhead,
+    const int module_l
 ) {
 
-    const int B = X.size(0); const int N = X.size(1); const int E = X.size(2);
+    const int batch_dim = X.size(0); const int ctx_dim = X.size(1); const int embed_dim = X.size(2);
 
     auto Y = torch::zeros_like(X);
     auto Ya = torch::zeros_like(Xa);
     torch::Device device(torch::kCUDA);
 
     // Calculate SRAM size needed per block
-    int tile_size = n * E / C;
-    const int sram_size = (3 * tile_size * sizeof(float));
+    int tile_size = cache_dim * embed_dim / nhead;
+    const int sram_size = (2 * tile_size * sizeof(float));
     int max_sram_size;
     cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
     printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
 
-    dim3 grid_dim(B * C, N / n);  // batch_size x num_heads
-    dim3 block_dim(n);  // Bc threads per block
+    dim3 grid_dim(batch_dim * nhead, ctx_dim / cache_dim);
+    dim3 block_dim(cache_dim);  // Bc threads per block
 
     forward_kernel<<<grid_dim, block_dim, sram_size>>>(
-        X.data_ptr<float>(), Xa.data_ptr<float>(), W.data_ptr<float>(), 
-        B, N, E, n, C, activation, alpha,
-        Y.data_ptr<float>(), Ya.data_ptr<float>(), l
+        X.data_ptr<float>(), 
+        Xa.data_ptr<float>(), 
+        W.data_ptr<float>(), 
+        batch_dim, 
+        ctx_dim, 
+        embed_dim, 
+        cache_dim, 
+        activation, 
+        alpha,
+        nhead,
+        Y.data_ptr<float>(), 
+        Ya.data_ptr<float>(), 
+        module_l
     );
-    return std::make_tuple(Y, Ya);
+    return {Y, Ya};
 }
