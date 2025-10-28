@@ -157,5 +157,8 @@ std::vector< torch::Tensor > forward(
         Ya.data_ptr<float>(), 
         module_l
     );
+
+    cudaDeviceSynchronize();
+
     return {Y, Ya};
 }

@@ -62,13 +62,12 @@ void backward_kernel(
     const uint tile_size = cache_dim * nfeats;
     float* Y_smem = sram;
     float* Ya_smem = &sram[tile_size];
-    float* F_smem = &sram[tile_size * 2];
-    float* dxj_smem = &sram[tile_size * 3];
+    float* dxj_smem = &sram[tile_size * 2];
 
-    float* dY_smem = &sram[tile_size * 4];
-    float* dYa_smem = &sram[tile_size * 5];
-    float* dWi_smem = &sram[tile_size * 6];
-    float* dWj_smem = &sram[tile_size * 7];
+    float* dY_smem = &sram[tile_size * 3];
+    float* dYa_smem = &sram[tile_size * 4];
+    float* dWi_smem = &sram[tile_size * 5];
+    float* dWj_smem = &sram[tile_size * 6];
 
     const uint i = extract_group_index_simple(bcache, tx, cache_dim, ctx_dim);
     const uint yi_offset = (bbatch * ctx_dim * embed_dim) + (i * embed_dim) + bhead * nfeats;
@@ -101,7 +100,8 @@ void backward_kernel(
             attn += Y_smem[tx * nfeats + feat] * W[nfeats * bhead + feat] \
                  + Y_smem[j * nfeats + feat] * W[embed_dim + nfeats * bhead + feat]; 
         }
-        
+
+        // Use reversibel trick xa
         for (int feat = 0; feat < nfeats; feat++) {
             float t = alpha * Y_smem[tx * nfeats + feat] + (1.0-alpha) * attn * Y_smem[j * nfeats + feat];
             float f;
@@ -115,89 +115,109 @@ void backward_kernel(
             else {
                 f = t;
             }
-            // Use reversibel trick xa
             Ya_smem[tx * nfeats + feat] = (Ya_smem[tx * nfeats + feat] - f * (1.0 - m)) / m;
-            F_smem[tx * nfeats + feat] = f;
         }
 
-        float dLdyi_dyidT_const = 0.0; 
-        float dLdya_dyadT_const = 0.0; 
+        __syncthreads();
+
+        // Compute vjp 
+        // dL/dxi = dL/dyi dyi/dxi + dL/dya dya/dxi 
+        // dL/dxa = dL/dyi dyi/dxa + dL/dya dya/dxa 
+        // dL/dxj = dL/dyi dyi/dxj + dL/dya dya/dxj 
         
-        for (int feat = 0; feat < nfeats; feat++) {
-            float df_dt;
-            if (activation == 0){
-                df_dt = 1.0 - F_smem[tx * nfeats + feat] * F_smem[tx * nfeats + feat];
-            }else if (activation == 1){
-                df_dt = (F_smem[tx * nfeats + feat] > 0) ? 1.0 : 0.0;
-            }else if (activation == 2){
-                df_dt = F_smem[tx * nfeats + feat] * (1.0 - F_smem[tx * nfeats + feat]);
+        for (int col = 0; col < nfeats; col++) {
+            float dxi = 0.0f;
+            float dxa = 0.0f;
+            float dxj = 0.0f;
+            float dwi = 0.0f;
+            float dwj = 0.0f;
+
+            for (int row = 0; row < nfeats; row++) {
+                float delta_ij = (tx == j) ? 1.0f : 0.0f;
+                float delta_kl = (row == col) ? 1.0f : 0.0f;
+                
+                float t = alpha * Y_smem[tx * nfeats + row] + (1.0-alpha) * attn * Y_smem[j * nfeats + row];
+                float f, df_dt;
+                if (activation == 0){
+                    f = tanh(t);
+                    df_dt = 1.0 - f * f;
+                }else if (activation == 1){
+                    f = max(t, 0.0);
+                    df_dt = (f > 0) ? 1.0 : 0.0;
+                }else if (activation == 2){
+                    f = 1.0 / (1.0 + exp(-t));
+                    df_dt = f * (1.0 - f);
+                }
+                else {
+                    f = t;
+                    df_dt = 1.0;
+                }
+
+                // Compute dxi for correct row and col
+                float dt_dxi = alpha * delta_kl + (1.0-alpha) * (\
+                    (Y_smem[j * nfeats + row] * (W[nfeats * bhead + col] + delta_ij * W[embed_dim + nfeats * bhead + col])) + \
+                    attn * delta_ij * delta_kl \
+                );
+                float df_dxi = df_dt * dt_dxi;
+                
+                float dya_dxi = (1.0-m) * df_dxi;
+                float dyi_dxi = m * delta_kl + (1.0-m) * dya_dxi;
+                dxi += dyi_dxi * dY_smem[tx * nfeats + row] + dya_dxi * dYa_smem[tx * nfeats + row];
+                
+                // Compute dxj when i!=j, contribution from other threads
+                float dt_dxj = (1.0-alpha) * (\
+                    Y_smem[j * nfeats + row] * (W[embed_dim + nfeats * bhead + col]) + \
+                    attn * delta_kl \
+                );
+                float df_xj = df_dt * dt_dxj;
+                float dya_dxj = (1.0-m) * df_xj;
+                float dyi_dxj = (1.0-m) * dya_dxj;
+                dxj += dyi_dxj * dY_smem[tx * nfeats + row] + dya_dxj * dYa_smem[tx * nfeats + row];
+
+                // Compute dxa
+                float dya_dxa = delta_kl * m;
+                float dyi_dxa = (1.0-m) * dya_dxa;
+                dxa += dyi_dxa * dY_smem[tx * nfeats + row] + dya_dxa * dYa_smem[tx * nfeats + row];
+
+                // Compute dW
+                float df_dwi = df_dt * (1.0-alpha) * Y_smem[tx * nfeats + col] * Y_smem[j * nfeats + row];  
+                float df_dwj = df_dt * (1.0-alpha) * Y_smem[j * nfeats + col] * Y_smem[j * nfeats + row];  
+                
+                float dya_dwi = (1.0-m) * df_dwi;  
+                float dya_dwj = (1.0-m) * df_dwj;  
+                
+                float dyi_dwi = (1.0-m) * dya_dwi;  
+                float dyi_dwj = (1.0-m) * dya_dwj;
+                
+                dwi += dyi_dwi * dY_smem[tx * nfeats + row] + dya_dwi * dYa_smem[tx * nfeats + row];
+                dwj += dyi_dwj * dY_smem[tx * nfeats + row] + dya_dwj * dYa_smem[tx * nfeats + row];
+
+                __syncthreads();
+
             }
-            else {
-                df_dt = 1.0;
-            }
 
-            float dyi_dt = (1.0 - m) * (1.0 - m) * df_dt;
-            float dya_dt = (1.0 - m) * df_dt;
-            
-            dLdyi_dyidT_const += dY_smem[tx * nfeats + feat] * dyi_dt * Y_smem[j * nfeats + feat];
-            dLdya_dyadT_const += dYa_smem[tx * nfeats + feat] * dya_dt * Y_smem[j * nfeats + feat];
-        }
-
-        // dxi from yi and ya
-        for (int feat = 0; feat < nfeats; feat++) {
-            float dWi = dLdyi_dyidT_const * Y_smem[tx * nfeats + feat] * (1.0-alpha) + \
-                 dLdya_dyadT_const * Y_smem[tx * nfeats + feat] * (1.0-alpha);
-            float dWj = dLdyi_dyidT_const * Y_smem[j * nfeats + feat] * (1.0-alpha) + \
-                dLdya_dyadT_const * Y_smem[j * nfeats + feat] * (1.0-alpha);
-
-            dWi_smem[tx * nfeats + feat] += dWi;
-            dWj_smem[tx * nfeats + feat] += dWj;
-
-            float df_dt;
-            if (activation == 0){
-                df_dt = 1.0 - F_smem[tx * nfeats + feat] * F_smem[tx * nfeats + feat];
-            }else if (activation == 1){
-                df_dt = (F_smem[tx * nfeats + feat] > 0) ? 1.0 : 0.0;
-            }else if (activation == 2){
-                df_dt = F_smem[tx * nfeats + feat] * (1.0 - F_smem[tx * nfeats + feat]);
-            }
-            else {
-                df_dt = 1.0;
-            }
-
-            // dxi from yi and ya
-            // dxa from yi and ya
-
-            float dyi_dt = (1.0 - m) * (1.0 - m) * df_dt;
-            float dya_dt = (1.0 - m) * df_dt;
-
-            float dLdyi_dyidxi = dY_smem[tx * nfeats + feat] * m + alpha * dY_smem[tx * nfeats + feat] * dyi_dt + (1.0 - alpha) * dLdyi_dyidT_const * W[nfeats * bhead + feat]; 
-            float dLdya_dyadxi = alpha * dYa_smem[tx * nfeats + feat] * dya_dt + (1.0 - alpha) * dLdya_dyadT_const * W[nfeats * bhead + feat]; 
-            float dLdyi_dyidxa = dY_smem[tx * nfeats + feat] * m * (1.0 - m); 
-            float dLdya_dyadxa = dYa_smem[tx * nfeats + feat] * m;
-
-            float dxi = dLdyi_dyidxi + dLdya_dyadxi;
-            float dxa = dLdyi_dyidxa + dLdya_dyadxa;
-
-            // add dxj to dxi
-            float dxj_i = (1.0-alpha) * dLdyi_dyidT_const * W[embed_dim + nfeats * bhead + feat] + (1.0-alpha) * dY_smem[tx * nfeats + feat] * dyi_dt * attn; 
-            float dxj_a = (1.0-alpha) * dLdya_dyadT_const * W[embed_dim + nfeats * bhead + feat] + (1.0-alpha) * dYa_smem[tx * nfeats + feat] * dya_dt * attn; 
-            float dxj = dxj_i + dxj_a;
-            dxj_smem[tx * nfeats + feat] = dxj;
-            
             __syncthreads();
 
-            if (j == tx){
-                dxi += dxj;
-                for (int tj = 0; tj < cache_dim; tj++) {
-                    if (tj != tx){
-                        dxi += dxj_smem[tj * nfeats + feat];
+            dWi_smem[tx * nfeats + col] += dwi;
+            dWj_smem[tx * nfeats + col] += dwj;
+
+            dxj_smem[tx * nfeats + col] = dxj;
+
+            __syncthreads();
+
+            for (int i = 0; i < cache_dim; i++) {
+                if (tx == j){
+                    if (i != tx){
+                        dxi += dxj_smem[i * nfeats + col];
                     }
-                }            
+                }
             }
-            dY_smem[tx * nfeats + feat] = dxi;
-            dYa_smem[tx * nfeats + feat] = dxa;
             __syncthreads();
+
+            dY_smem[tx * nfeats + col] = dxi;
+            dYa_smem[tx * nfeats + col] = dxa;
+            __syncthreads();
+
         }
     }
 
@@ -265,6 +285,8 @@ std::vector< torch::Tensor > backward(
         dW.data_ptr<float>(), 
         module_l
     );
+
+    cudaDeviceSynchronize();
 
     return {X, Xa, dX, dXa, dW};
 }

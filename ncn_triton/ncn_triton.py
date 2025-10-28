@@ -7,8 +7,8 @@ import time
 from typing import Tuple
 
 
-from triton_utils import _take_slice_
-from group_tensors import extract_group_index_
+from .ncn_triton_utils import _take_slice_
+from .group_tensors import extract_group_index_
 
 
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `matmul_kernel`.
