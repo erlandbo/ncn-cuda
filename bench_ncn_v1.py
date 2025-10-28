@@ -10,9 +10,12 @@ from torch_ref.torch_ref import ref_naive_fwd
 
 import time
 
+start_time = time.time()
+
 # Load the CUDA kernel as a python module
-ncn_fwd = load(name='ncn_fwd', sources=['ncn_cuda/main_ncn_fwd.cpp', 'ncn_cuda/ncn_fwd.cu'], extra_cuda_cflags=['-O2'])
-ncn_bwd = load(name='ncn_bwd', sources=['ncn_cuda/main_ncn_bwd.cpp', 'ncn_cuda/ncn_bwd.cu'], extra_cuda_cflags=['-O2'])
+#ncn_fwd = load(name='ncn_fwd', sources=['ncn_cuda/main_ncn_fwd.cpp', 'ncn_cuda/ncn_fwd.cu'], extra_cuda_cflags=['-O2'])
+#ncn_bwd = load(name='ncn_bwd', sources=['ncn_cuda/main_ncn_bwd.cpp', 'ncn_cuda/ncn_bwd.cu'], extra_cuda_cflags=['-O2'])
+ncn_cuda = load(name='ncn_cuda', sources=['ncn_cuda/ncn_cuda.cpp', 'ncn_cuda/ncn_fwd_cuda_kernel.cu', 'ncn_cuda/ncn_bwd_cuda_kernel.cu'], extra_cuda_cflags=['-O2'])
 
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
@@ -67,9 +70,11 @@ torch_naive_dxa, xa.grad = xa.grad.clone(), None
 torch_naive_dW, W.grad = W.grad.clone(), None
 
 
-cpp_yi, cpp_ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, module_l)
+#cpp_yi, cpp_ya = ncn_fwd.forward(x, xa, W, alpha, activation, n_cache, n_head, module_l)
+cpp_yi, cpp_ya = ncn_cuda.forward(x, xa, W, alpha, activation, n_cache, n_head, module_l)
 
-cpp_x, cpp_xa, cpp_dx, cpp_dxa, cpp_dW = ncn_bwd.backward(cpp_yi, cpp_ya, dyi, dya, W, alpha, activation, n_cache, n_head, module_l)
+#cpp_x, cpp_xa, cpp_dx, cpp_dxa, cpp_dW = ncn_bwd.backward(cpp_yi, cpp_ya, dyi, dya, W, alpha, activation, n_cache, n_head, module_l)
+cpp_x, cpp_xa, cpp_dx, cpp_dxa, cpp_dW = ncn_cuda.backward(cpp_yi, cpp_ya, dyi, dya, W, alpha, activation, n_cache, n_head, module_l)
 
 
 print('yi values sanity check:', torch.allclose(torch_naive_yi, cpp_yi, rtol=0, atol=1e-02))
@@ -80,3 +85,4 @@ print('dxa values sanity check:', torch.allclose(torch_naive_dxa, cpp_dxa, rtol=
 
 print('dW values sanity check:', torch.allclose(torch_naive_dW, cpp_dW.flatten(0,1).sum(0), rtol=0, atol=1e-02))
 
+print(time.time()- start_time)

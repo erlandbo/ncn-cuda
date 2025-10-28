@@ -3,29 +3,12 @@
 #include <cuda_runtime.h>
 
 
-__device__ int extract_group_index_(int i, int l, int* strides, int n) {
-    // strides [l] equals n ** l.
-    //  lower part : digits 0 ... l -1
-    int lower = i % strides[l];
-    // the digit at position l
-    int index_within_group = (i / strides[l]) % n;
-    // digits above position l , shifted down one place
-    int upper = i / (n * strides[l]);
-    // reassemble the group number without i_l
-    int group_number = lower + upper * strides[l];
-    return index_within_group, group_number;
-}
 
-__device__ int extract_group_index_simple(int group_nr, int idx_within_group, int n, int N) {
+__device__ int extract_group_index_simple_fwd(int group_nr, int idx_within_group, int n, int N) {
     int i = group_nr * n + idx_within_group;
     return i;
 }
 
-
-__device__ float kernel(int group_nr, int idx_within_group, int n, int N) {
-    int i = group_nr * n + idx_within_group;
-    return i;
-}
 
 
 __global__
@@ -60,7 +43,7 @@ void forward_kernel(
     float* X_smem = sram;
     float* Xa_smem = &sram[tile_size];
 
-    const uint i = extract_group_index_simple(bcache, tx, cache_dim, ctx_dim);
+    const uint i = extract_group_index_simple_fwd(bcache, tx, cache_dim, ctx_dim);
     const uint xi_offset = (bbatch * ctx_dim * embed_dim) + (i * embed_dim) + bhead * nfeats;
 
 
