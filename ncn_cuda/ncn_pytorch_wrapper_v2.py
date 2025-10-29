@@ -1,5 +1,6 @@
 import math
 import torch
+from torch import nn
 from typing import Tuple
 
 import ncn_cuda_module
@@ -11,7 +12,7 @@ class NCNFunction(torch.autograd.Function):
         yi, ya = ncn_cuda_module.forward(
             x, 
             xa, 
-            W, 
+            W.data, 
             alpha, 
             activation, 
             n_cache, 
@@ -72,19 +73,16 @@ def fused_ncn_cuda_v2(
     return yi, ya
 
 
-class NCN(torch.nn.Module):
-    def __init__(self, alpha, activation, n_cache, n_head, module_l, embed_dim):
-        super(NCN, self).__init__()
+
+class NCNModuleCuda(nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, module_nr, embed_dim):
+        super(NCNModuleCuda, self).__init__()
         self.alpha = alpha
         self.activation = activation
         self.n_cache = n_cache
         self.n_head = n_head
-        self.module_l = module_l
-        self.embed_dim = embed_dim
-        self.W = torch.nn.Parameter(
-            torch.empty(2 * embed_dim))
-        self.bias = torch.nn.Parameter(torch.empty(1))
-        self.reset_parameters()
+        self.module_nr = module_nr
+        self.weight = torch.nn.Parameter(torch.ones(2*embed_dim).normal_(mean=0.0, std=1/(2.0 * embed_dim)), requires_grad=True)
 
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.embed_dim)
@@ -92,5 +90,56 @@ class NCN(torch.nn.Module):
             weight.data.uniform_(-stdv, +stdv)
 
     def forward(self, x, xa):
-        return NCNFunction.apply(x, xa, self.W, self.alpha, self.activation, self.n_cache, self.n_head, self.module_l)
+        y, ya = fused_ncn_cuda_v2(
+                x, 
+                xa, 
+                self.weight, 
+                self.alpha,
+                self.activation, 
+                self.n_head, 
+                self.n_cache, 
+                self.module_nr
+        )
+        return y, ya
+
+
+
+class NCNNetCuda(nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, num_modules, embed_dim):
+        super(NCNNetCuda, self).__init__()
+        self.num_modules = num_modules
+        activation_nr = {"tanh": 0, "relu": 1, "sigmoid": 2, "linear": -1}[activation]
+        self.ncn_modules = nn.ModuleList([NCNModuleCuda( alpha, activation_nr, n_cache, n_head, module_nr, embed_dim) for module_nr in range(num_modules)])
+
+    def forward(self, x, xa):
+        for module_nr in range(self.num_modules):
+            x, xa = self.ncn_modules[module_nr](x, xa)
+        return x, xa
+    
+
+
+class NCNNetTestCuda(nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, num_modules, weights):
+        super(NCNNetTestCuda, self).__init__()
+        self.num_modules = num_modules
+        self.alpha = alpha
+        self.activation_nr = {"tanh": 0, "relu": 1, "sigmoid": 2, "linear": -1}[activation]
+        self.n_cache = n_cache
+        self.n_head = n_head
+        self.weights = weights
+
+
+    def forward(self, x, xa):
+        for module_nr in range(self.num_modules):
+            x, xa = fused_ncn_cuda_v2(
+                x, 
+                xa, 
+                self.weights[module_nr], 
+                self.alpha,
+                self.activation_nr, 
+                self.n_cache, 
+                self.n_head, 
+                module_nr
+        )
+        return x, xa
     

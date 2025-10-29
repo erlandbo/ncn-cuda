@@ -1,5 +1,7 @@
 import torch
+from torch import nn
 from torch.nn import functional as F
+
 
 
 def extract_group_index_simple(group_nr, idx_within_group, cache_dim, ctx_len):
@@ -39,9 +41,11 @@ def group_pos_to_index_v2(N: int, block_size: int, stage: int,
     return idx
 
 
+
 def ref_naive_fwd(X, Xa, W, alpha, activation, n, C, module_l):
     B, N, E = X.shape
     Y_, Ya_ = torch.zeros_like(X), torch.zeros_like(Xa)
+    # Y_, Ya_ = torch.zeros(B,N,E, device="cuda").requires_grad_(), torch.zeros(B,N,E, device="cuda").requires_grad_()
     for b in range(B):
         
         for c in range(C):
@@ -82,6 +86,30 @@ def ref_naive_fwd(X, Xa, W, alpha, activation, n, C, module_l):
                 
                 Y_[b, xi_idxes, c * ce : (c+1) * ce] += xi
                 Ya_[b, xi_idxes, c * ce : (c+1) * ce] += xa
-                
-
+    
     return Y_, Ya_
+
+
+
+class RefTorchNaive(nn.Module):
+    def __init__(
+        self,
+        alpha,
+        activation,
+        num_layers,
+        cache,
+        n_kernel_feats,
+        weights
+    ):
+        super().__init__()
+        self.weights = weights
+        self.alpha = alpha
+        self.activation = activation
+        self.num_layers = num_layers
+        self.n_kernel_feats = n_kernel_feats
+        self.cache = cache
+
+    def forward(self, x, xa):
+        for l in range(len(self.weights)):
+            x, xa = ref_naive_fwd(x, xa, self.weights[l], self.alpha, self.activation, self.cache, self.n_kernel_feats, l)
+        return x, xa

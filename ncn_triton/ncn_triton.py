@@ -276,7 +276,7 @@ class FusedLinearChunkNCNFunction(torch.autograd.Function):
         grid = lambda META: (triton.cdiv(MAX_SEQ_LEN, GROUP), BATCH_SIZE*NUM_HEADS, 1)
         
         forward_kernel[grid](
-            x_ptr=x, xa_ptr=xa, yi_ptr=yi, ya_ptr=ya, W_ptr=W, 
+            x_ptr=x, xa_ptr=xa, yi_ptr=yi, ya_ptr=ya, W_ptr=W.data, 
             BATCH_SIZE=BATCH_SIZE, NUM_HEADS=NUM_HEADS, MAX_CTX_LEN=MAX_SEQ_LEN, EMBED_DIM=EMBED_DIM, HEAD_DIM=EMBED_DIM//NUM_HEADS,
             ACTIVATION=ACTIVATION,
             ALPHA=ALPHA,
@@ -323,6 +323,7 @@ class FusedLinearChunkNCNFunction(torch.autograd.Function):
         )
 
         sum_dW = torch.sum(dW, dim=(0, 1))
+        print(sum_dW)
         return dxi, dxa, sum_dW, None, None, None, None, None
 
 
@@ -347,3 +348,72 @@ def fused_ncn_triton(
         MODULE_L
     )
     return yi, ya
+
+
+class NCNModuleTriton(torch.nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, module_nr, embed_dim):
+        super(NCNModuleTriton, self).__init__()
+        self.alpha = alpha
+        self.activation = activation
+        self.n_cache = n_cache
+        self.n_head = n_head
+        self.module_nr = module_nr
+        self.weight = nn.Parameter(torch.ones(2*embed_dim).normal_(mean=0.0, std=1/(2.0 * embed_dim)), requires_grad=True)
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.embed_dim)
+        for weight in self.parameters():
+            weight.data.uniform_(-stdv, +stdv)
+
+    def forward(self, x, xa):
+        y, ya = fused_ncn_triton(
+                x, 
+                xa, 
+                self.weight, 
+                self.alpha,
+                self.activation, 
+                self.n_head, 
+                self.n_cache, 
+                self.module_nr
+        )
+        return y, ya
+    
+
+
+class NCNNetTriton(nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, num_modules, embed_dim):
+        super(NCNNetTriton, self).__init__()
+        self.num_modules = num_modules
+        self.ncn_modules = nn.ModuleList([NCNModuleTriton( alpha, activation, n_cache, n_head, module_nr, embed_dim) for module_nr in range(num_modules)])
+
+    def forward(self, x, xa):
+        for module_nr in range(self.num_modules):
+            x, xa = self.ncn_modules[module_nr](x, xa)
+        return x, xa
+
+
+class NCNNetTestTriton(nn.Module):
+    def __init__(self, alpha, activation, n_cache, n_head, num_modules, weights):
+        super(NCNNetTestTriton, self).__init__()
+        self.num_modules = num_modules
+        self.alpha = alpha
+        self.activation = activation
+        self.n_cache = n_cache
+        self.n_head = n_head
+        self.weights = weights
+
+
+    def forward(self, x, xa):
+        for module_nr in range(self.num_modules):
+            x, xa = fused_ncn_triton(
+                x, 
+                xa, 
+                self.weights[module_nr], 
+                self.alpha,
+                self.activation, 
+                self.n_head, 
+                self.n_cache, 
+                module_nr
+        )
+        return x, xa
+    
