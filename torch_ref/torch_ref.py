@@ -44,21 +44,26 @@ def group_pos_to_index_v2(N: int, block_size: int, stage: int,
 
 def ref_naive_fwd(X, Xa, W, alpha, activation, n, C, module_l):
     B, N, E = X.shape
-    Y_, Ya_ = torch.zeros_like(X), torch.zeros_like(Xa)
+    Y_ = torch.zeros_like(X)
+    Ya_ = torch.zeros_like(Xa)
     # Y_, Ya_ = torch.zeros(B,N,E, device="cuda").requires_grad_(), torch.zeros(B,N,E, device="cuda").requires_grad_()
     for b in range(B):
         
         for c in range(C):
             ce = E // C
+            c = int(c)
+            ce = int(ce)
+            E = int(E)
+            b = int(b)
             x_bc = X[b, :, c * ce : (c+1) * ce]
             xa_bc = Xa[b, :, c * ce : (c+1) * ce]
             W_ci = W[c * ce : (c+1) * ce]
             W_cj = W[E + c * ce : E + (c+1) * ce]
             for group_nr in range(N//n):
-                idx_within_group = torch.arange(0, n)
+                idx_within_group = torch.arange(0, n, dtype=torch.long)
                 #xi_idxes = extract_group_index_simple(group_nr, idx_within_group, n, N)
                 xi_idxes = group_pos_to_index_v2(N, n, module_l, group_nr, idx_within_group, one_based=False)
-
+                xi_idxes = xi_idxes.to(torch.long)
 
                 xi_group = x_bc[xi_idxes]                        # extracted values in correct order
                 xa_group = xa_bc[xi_idxes]                        # extracted values in correct order
@@ -67,13 +72,17 @@ def ref_naive_fwd(X, Xa, W, alpha, activation, n, C, module_l):
                 xa = xa_group
                 
                 for j in range(n):
+                    j = int(j)
 
                     xj = xi[j].unsqueeze(0).broadcast_to(xi.shape)#.detach().clone()  # (n, Ec)
 
                     #phi = torch.cat((xi, xj), dim=-1) # (n, 2Ec)
+                    #import pdb; pdb.set_trace()
                     Wij =  torch.matmul(xi, W_ci) + torch.matmul(xj, W_cj)
 
                     T = alpha * xi + (1.0-alpha) * Wij[:, None] * xj  # (n,Ec)
+                    #T = alpha * xi + (1.0-alpha) * Wij.unsqueeze(1).broadcast_to(xj.shape) * xj  # (n,Ec)
+                    #T = alpha * xi + (1.0-alpha) * Wij.unsqueeze(1) * xj  # (n,Ec)
 
                     F = torch.tanh(T)
                     

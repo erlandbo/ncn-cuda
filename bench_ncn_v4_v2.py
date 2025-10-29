@@ -37,27 +37,31 @@ x = (
         (batch_size, seq_len, embd), dtype=torch.float32, device="cuda"
     )
     .normal_(mean=0.0, std=0.5)
-    .requires_grad_()
+    .requires_grad_().cuda()
 )
 
 xa = (
     torch.zeros(
         (batch_size, seq_len, embd), dtype=torch.float32, device="cuda"
-    )
-    .requires_grad_()
+    ) .requires_grad_().cuda()
+    
 )
 
-Ws = torch.nn.ParameterList([
-    torch.nn.Parameter(torch.ones(2*embd).normal_(mean=0.0, std=0.5), requires_grad=True).cuda() for _ in range(max_l)
-])
+#Ws = torch.nn.ParameterList([
+#    torch.nn.Parameter(torch.ones(2*embd).normal_(mean=0.0, std=0.5), requires_grad=True).cuda() for _ in range(max_l)
+#])
+Ws = [
+    torch.ones(2*embd, dtype=torch.float32, device="cuda").normal_(mean=0.0, std=0.5).requires_grad_().cuda() for _ in range(max_l)
+]
 
 
 
 dyi = torch.randn_like(x)
-dya = torch.randn_like(xa) #torch.randn_like(xa)
+dya = torch.randn_like(xa)  #torch.randn_like(xa)
 
 
-ref_naive_net = RefTorchNaive(alpha, activation, max_l, n_cache, n_head, Ws).cuda()
+
+ref_naive_net = RefTorchNaive(alpha, activation, max_l, n_cache, n_head, Ws)#.cuda()
 start_time_ref = time.time()
 
 
@@ -86,7 +90,7 @@ end_time_ref = time.time()
 start_time_cuda = time.time()
 
 
-ncn_net_cuda = NCNNetTestCuda(alpha, activation, n_cache, n_head, max_l, Ws).cuda()
+ncn_net_cuda = NCNNetTestCuda(alpha, activation, n_cache, n_head, max_l, Ws)#.cuda()
 cpp_yi, cpp_ya = ncn_net_cuda(x, xa)
 
 
@@ -111,7 +115,7 @@ end_time_cuda = time.time()
 
 start_time_triton = time.time()
 
-ncn_net_triton = NCNNetTestTriton(alpha, activation, n_cache, n_head, max_l, Ws).cuda()
+ncn_net_triton = NCNNetTestTriton(alpha, activation, n_cache, n_head, max_l, Ws)#.cuda()
 tri_yi, tri_ya = ncn_net_triton(x, xa)
 
 tri_yi.backward(dyi)

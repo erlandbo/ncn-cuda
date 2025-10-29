@@ -323,7 +323,6 @@ class FusedLinearChunkNCNFunction(torch.autograd.Function):
         )
 
         sum_dW = torch.sum(dW, dim=(0, 1))
-        print(sum_dW)
         return dxi, dxa, sum_dW, None, None, None, None, None
 
 
