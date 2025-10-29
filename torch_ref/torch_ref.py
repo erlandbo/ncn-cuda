@@ -7,7 +7,39 @@ def extract_group_index_simple(group_nr, idx_within_group, cache_dim, ctx_len):
     return i
 
 
-def ref_naive_fwd(X, Xa, W, alpha, activation, n, C):
+def group_pos_to_index_v2(N: int, block_size: int, stage: int,
+                       group_nr: int, pos_in_group: int,
+                       one_based: bool = False) -> int:
+    """
+    Map (group_nr, pos_in_group) -> original index (1..N) for stage_groups_local_first.
+    - N: total indices
+    - block_size: size of each group
+    - stage: stage number (0 -> local)
+    - group_nr: group number (0-based if one_based=False, otherwise 1-based)
+    - pos_in_group: position inside group (0-based if one_based=False, otherwise 1-based)
+    - one_based: True means group_nr and pos_in_group are 1-based; returned index is 1-based.
+    Returns: index in 1..N
+    """
+    assert N % block_size == 0, "block_size must divide N"
+    m = N // block_size
+    if one_based:
+        b = group_nr - 1
+        o = pos_in_group - 1
+    else:
+        b = group_nr
+        o = pos_in_group
+    
+
+    assert 0 <= b < m, "group_nr out of range"
+    assert all((0 <= o) & (o < block_size)), "pos_in_group out of range"
+
+    s = 0 if stage == 0 else (1 << (stage - 1)) % m
+    block = (b + o * s) % m
+    idx = block * block_size + o
+    return idx
+
+
+def ref_naive_fwd(X, Xa, W, alpha, activation, n, C, module_l):
     B, N, E = X.shape
     Y_, Ya_ = torch.zeros_like(X), torch.zeros_like(Xa)
     for b in range(B):
@@ -20,7 +52,8 @@ def ref_naive_fwd(X, Xa, W, alpha, activation, n, C):
             W_cj = W[E + c * ce : E + (c+1) * ce]
             for group_nr in range(N//n):
                 idx_within_group = torch.arange(0, n)
-                xi_idxes = extract_group_index_simple(group_nr, idx_within_group, n, N)
+                #xi_idxes = extract_group_index_simple(group_nr, idx_within_group, n, N)
+                xi_idxes = group_pos_to_index_v2(N, n, module_l, group_nr, idx_within_group, one_based=False)
 
 
                 xi_group = x_bc[xi_idxes]                        # extracted values in correct order

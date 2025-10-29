@@ -10,6 +10,20 @@ __device__ int extract_group_index_simple_fwd(int group_nr, int idx_within_group
 }
 
 
+__device__ int extract_index_group_v2_fwd(int group_nr, int idx_within_group, int n, int N, int module_l) {
+    const uint num_groups = N / n;
+    uint stride;
+    if (module_l == 0){
+        stride = 0;
+    }else{
+        stride = int((1ULL << (module_l - 1)) % (uint64_t)num_groups);
+    }
+
+    const uint64_t chunk = (uint64_t(group_nr) + uint64_t(idx_within_group) * uint64_t(stride)) % uint64_t(num_groups);
+    return int(chunk) * n + idx_within_group;
+}
+
+
 
 __global__
 void forward_kernel(
@@ -43,7 +57,7 @@ void forward_kernel(
     float* X_smem = sram;
     float* Xa_smem = &sram[tile_size];
 
-    const uint i = extract_group_index_simple_fwd(bcache, tx, cache_dim, ctx_dim);
+    const uint i = extract_index_group_v2_fwd(bcache, tx, cache_dim, ctx_dim, module_l);
     const uint xi_offset = (bbatch * ctx_dim * embed_dim) + (i * embed_dim) + bhead * nfeats;
 
 

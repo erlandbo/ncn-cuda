@@ -22,7 +22,7 @@ class NCNFunction(torch.autograd.Function):
         )
         ctx.save_for_backward(yi, ya, W)
         ctx.alpha = alpha
-        ctx.activation = activation
+        ctx.activation = {"tanh": 0, "relu": 1, "sigmoid": 2, "linear": -1}[activation]
         ctx.n_cache = n_cache
         ctx.n_head = n_head
         ctx.module_l = module_l

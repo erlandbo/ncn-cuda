@@ -44,9 +44,9 @@ class NCNFunction(torch.autograd.Function):
             ctx.module_l
         )
 
-        dW_reduced = dW.flatten(0,1).sum(0)
+        sum_dW = torch.sum(dW, dim=(0, 1))
 
-        return dx, dxa, dW_reduced, None, None, None, None, None
+        return dx, dxa, sum_dW, None, None, None, None, None
 
 
 def fused_ncn_cuda_v2(
