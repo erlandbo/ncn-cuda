@@ -45,9 +45,8 @@ class NCNFunction(torch.autograd.Function):
             ctx.module_l
         )
 
-        sum_dW = dW #torch.sum(dW, dim=(0, 1))
-        #import pdb; pdb.set_trace()
-
+        sum_dW = torch.sum(dW, dim=(0, 1))
+        
         return dx, dxa, sum_dW, None, None, None, None, None
 
 
