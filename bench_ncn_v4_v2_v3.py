@@ -74,7 +74,7 @@ torch_naive_yi.backward(dyi)
 
 torch_naive_dWs = []
 
-for i in range(max_l-1, -1, -1):
+for i in range(0, max_l):
     torch_naive_dW = ref_reversible_net.weights[i].grad.clone()
     ref_reversible_net.weights[i].grad = None
     torch_naive_dWs.append(torch_naive_dW)

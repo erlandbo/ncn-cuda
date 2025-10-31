@@ -222,8 +222,24 @@ void backward_kernel(
         Xa[yi_offset + feat] = Ya_smem[tx * nfeats + feat];
         dX[yi_offset + feat] = dY_smem[tx * nfeats + feat];
         dXa[yi_offset + feat] = dYa_smem[tx * nfeats + feat];
-        dW[dwi_offset + feat] = dWi_smem[tx * nfeats + feat];
-        dW[dwj_offset + feat] = dWj_smem[tx * nfeats + feat];
+    //    dW[dwi_offset + feat] = dWi_smem[tx * nfeats + feat];
+    //    dW[dwj_offset + feat] = dWj_smem[tx * nfeats + feat];
+    }
+    __syncthreads();
+
+    for (int feat = 0; feat < nfeats; feat++) {
+        if (tx == 0) {
+            float sum1 = 0.0;
+            float sum2 = 0.0;
+            for (int i = 0; i < cache_dim; i++) {
+                sum1 += dWi_smem[i * nfeats + feat];
+                sum2 += dWj_smem[i * nfeats + feat];
+            }
+            int offs1 = (0 * ctx_dim * 2*embed_dim) + (0 * 2*embed_dim) + bhead * nfeats;
+            int offs2 = (0 * ctx_dim * 2*embed_dim) + (0 * 2*embed_dim) + bhead * nfeats + embed_dim;
+            atomicAdd(dW + offs1 + feat, sum1);
+            atomicAdd(dW + offs2 + feat, sum2);
+        }
     }
 
 }

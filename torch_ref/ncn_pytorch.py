@@ -30,7 +30,7 @@ class NCNFunctionPytorch(torch.autograd.Function):
                 x_values.append(xi)
                 xa_values.append(xa)
                 
-                xj = xi[start_j].broadcast_to(xi.shape)
+                xj = xi[start_j].unsqueeze(0).broadcast_to(xi.shape)
 
                 sim = torch.sum(xi * Wi[None, :], axis=1) + torch.sum(xj * Wj[None, :], axis=1)  # (B,)
                 T = ALPHA * xi + (1.0-ALPHA) * sim[:, None] * xj  # (B,E)
@@ -96,7 +96,7 @@ class NCNFunctionPytorch(torch.autograd.Function):
             # Use reversibel trick
             xi = (yi - ya * (1.0-m)) / m
 
-            xj = xi[start_j].broadcast_to(xi.shape)
+            xj = xi[start_j].unsqueeze(0).broadcast_to(xi.shape)
 
             sim = torch.sum(xi * Wi[None, :], axis=1) + torch.sum(xj * Wj[None, :], axis=1)  # (B,)
             T = ALPHA * xi + (1.0-ALPHA) * sim[:, None] * xj  # (B,E)
@@ -137,7 +137,7 @@ class NCNFunctionPytorch(torch.autograd.Function):
                 Wi = Wi.detach().requires_grad_(True)
                 Wj = Wj.detach().requires_grad_(True)
 
-                xj = xi[start_j].broadcast_to(xi.shape)
+                xj = xi[start_j].unsqueeze(0).broadcast_to(xi.shape)
 
                 sim = torch.sum(xi * Wi[None, :], axis=1) + torch.sum(xj * Wj[None, :], axis=1)  # (B,)
                 T = ALPHA * xi + (1.0-ALPHA) * sim[:, None] * xj  # (B,E)
